@@ -60,7 +60,8 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          pyinstaller --windowed src/Digital_Forensic_Investigation_Tool.py
+          rm -rf dist build
+          pyinstaller --windowed -y src/Digital_Forensic_Investigation_Tool.py
 
       - name: Install create-dmg
         if: runner.os == 'macOS'

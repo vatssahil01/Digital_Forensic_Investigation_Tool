@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['Digital_Forensic_Investigation_Tool.py'],
+    ['src\\Digital_Forensic_Investigation_Tool.py'],
     pathex=[],
     binaries=[],
     datas=[],

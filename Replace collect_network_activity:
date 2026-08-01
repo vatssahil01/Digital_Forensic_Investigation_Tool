@@ -1,0 +1,37 @@
+def collect_network_activity(self):
+    """Collect complete network activity information"""
+    self.status_label.config(text="Collecting complete network activity...")
+    self.progress_bar.start()
+
+    try:
+        network = "\n" + "=" * 60 + "\n"
+        network += f"NETWORK ACTIVITY (COMPLETE)\n"
+        network += f"Collected: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        network += "=" * 60 + "\n\n"
+        network += "Network Connections:\n" + "-" * 40 + "\n"
+
+        if self.current_os == "Windows":
+            result = subprocess.run(['netstat', '-an'], capture_output=True, text=True)
+        else:
+            result = subprocess.run(['netstat', '-tuln'], capture_output=True, text=True)
+        network += result.stdout + "\n\n"
+
+        network += "\nActive Connections (Detailed):\n" + "-" * 40 + "\n"
+        try:
+            if self.current_os == "Windows":
+                result = subprocess.run(['netstat', '-b'], capture_output=True, text=True, timeout=30)
+            else:
+                result = subprocess.run(['netstat', '-tunp'], capture_output=True, text=True, timeout=30)
+            network += result.stdout + "\n"
+        except Exception as e:
+            network += f"Unable to get detailed connection info: {e}\n"
+
+        self.log_text.insert('end', network)
+        self.log_text.see('end')
+        self.investigation_data['network_activity'] = network
+
+    except Exception as e:
+        self.log_text.insert('end', f"Error collecting network activity: {str(e)}\n")
+
+    self.status_label.config(text="Network activity collected (complete)")
+    self.progress_bar.stop()

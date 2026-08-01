@@ -1,0 +1,57 @@
+def collect_event_logs(self):
+    """Collect complete system event logs (no time/count limits)"""
+    self.status_label.config(text="Collecting complete event logs (this may take a while)...")
+    self.progress_bar.start()
+    self.log_text.delete('1.0', 'end')
+
+    try:
+        logs = "=" * 60 + "\n"
+        logs += f"SYSTEM EVENT LOGS (COMPLETE)\n"
+        logs += f"Collected: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        logs += "=" * 60 + "\n\n"
+
+        if self.current_os == "Windows":
+            logs += "Windows Event Logs:\n" + "-" * 40 + "\n"
+            try:
+                result = subprocess.run(['wevtutil', 'qe', 'System', '/f:text'],
+                                         capture_output=True, text=True, timeout=120)
+                logs += "System Log (Complete):\n" + result.stdout + "\n\n"
+            except Exception as e:
+                logs += f"Unable to read System log: {e}. Run as administrator.\n\n"
+            try:
+                result = subprocess.run(['wevtutil', 'qe', 'Application', '/f:text'],
+                                         capture_output=True, text=True, timeout=120)
+                logs += "Application Log (Complete):\n" + result.stdout + "\n\n"
+            except Exception as e:
+                logs += f"Unable to read Application log: {e}. Run as administrator.\n\n"
+
+        elif self.current_os == "Linux":
+            logs += "Linux System Logs:\n" + "-" * 40 + "\n"
+            if os.path.exists('/var/log/syslog'):
+                with open('/var/log/syslog', 'r', errors='ignore') as f:
+                    logs += "Syslog (Complete):\n" + f.read() + "\n"
+            if os.path.exists('/var/log/auth.log'):
+                with open('/var/log/auth.log', 'r', errors='ignore') as f:
+                    logs += "\nAuthentication Log (Complete):\n" + f.read() + "\n"
+
+        elif self.current_os == "Darwin":
+            logs += "macOS System Logs:\n" + "-" * 40 + "\n"
+            try:
+                # macOS unified log retains a limited window regardless of --start,
+                # so this pulls everything still on disk.
+                result = subprocess.run(
+                    ['log', 'show', '--start', '2000-01-01 00:00:00',
+                     '--predicate', 'processImagePath contains "system"'],
+                    capture_output=True, text=True, timeout=180)
+                logs += "System Log (Complete available history):\n" + result.stdout + "\n\n"
+            except Exception as e:
+                logs += f"Unable to read system log: {e}\n\n"
+
+        self.log_text.insert('1.0', logs)
+        self.investigation_data['event_logs'] = logs
+
+    except Exception as e:
+        self.log_text.insert('1.0', f"Error collecting event logs: {str(e)}\n")
+
+    self.status_label.config(text="Event logs collected (complete)")
+    self.progress_bar.stop()

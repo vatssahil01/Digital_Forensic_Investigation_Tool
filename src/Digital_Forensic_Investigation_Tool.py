@@ -15,7 +15,7 @@ import hashlib
 import json
 import sqlite3
 import shutil
-from datetime import datetime
+from datetime import datetime,timedelta
 from pathlib import Path
 import platform
 import subprocess
@@ -331,55 +331,101 @@ class DigitalForensicTool:
             pass
         return info
 
+    def chrome_timestamp_to_datetime(self, timestamp):
+        """Convert Chromium/WebKit timestamp to readable datetime"""
+        try:
+            from datetime import datetime, timedelta
+
+            return (
+                datetime(1601, 1, 1) +
+                timedelta(microseconds=timestamp)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+        except Exception:
+            return "Unknown"
+
     def collect_timeline(self):
-        """Collect system timeline"""
-        self.status_label.config(text="Collecting timeline...")
+        """Collect complete system timeline (all files, recursively) for all OS"""
+        self.status_label.config(text="Collecting timeline (this may take a while)...")
         self.progress_bar.start()
 
         try:
             timeline = "=" * 60 + "\n"
-            timeline += f"SYSTEM TIMELINE\n"
+            timeline += f"SYSTEM TIMELINE (COMPLETE)\n"
             timeline += f"Collected: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             timeline += "=" * 60 + "\n\n"
-
-            # Collect file system timeline (recently modified files)
-            timeline += "Recently Modified Files:\n"
+            timeline += "All Files (Created/Modified/Accessed Timeline):\n"
             timeline += "-" * 40 + "\n"
 
             # Check common directories
             if self.current_os == "Windows":
-                paths = [os.path.expanduser("~\\Documents"),
-                        os.path.expanduser("~\\Downloads"),
-                        os.path.expanduser("~\\Desktop")]
+                paths = [
+                    os.path.expanduser("~\\Documents"),
+                    os.path.expanduser("~\\Downloads"),
+                    os.path.expanduser("~\\Desktop"),
+                    os.path.expanduser("~\\Pictures"),
+                    os.path.expanduser("~\\AppData\\Local\\Temp")
+                ]
             else:
-                paths = [os.path.expanduser("~/Documents"),
-                        os.path.expanduser("~/Downloads"),
-                        os.path.expanduser("~/Desktop")]
+                paths = [
+                    os.path.expanduser("~/Documents"),
+                    os.path.expanduser("~/Downloads"),
+                    os.path.expanduser("~/Desktop"),
+                    os.path.expanduser("~/Pictures"),
+                    "/tmp"
+                ]
 
             for path in paths:
-                if os.path.exists(path):
+               if os.path.exists(path):
                     timeline += f"\nDirectory: {path}\n"
-                    try:
-                        files = os.listdir(path)[:10]  # Limit to 10 files
+                    
+                    for root_dir, dirs, files in os.walk(path):
+                        
+                        dirs[:] = [d for d in dirs if not d.startswith('.')]
+                        
                         for file in files:
-                            file_path = os.path.join(path, file)
-                            if os.path.isfile(file_path):
-                                mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
-                                timeline += f"  {file} - Modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    except:
-                        pass
+                            file_path = os.path.join(root_dir, file)
+                            try:
+                                if os.path.isfile(file_path):
+                                    stat = os.stat(file_path)
+                                    
+                                    mtime = datetime.fromtimestamp(stat.st_mtime)
+                                    ctime = datetime.fromtimestamp(stat.st_ctime)
 
-            self.timeline_text.insert('end', timeline)
-            self.timeline_text.see('end')
+                                    try:
+                                        atime = datetime.fromtimestamp(stat.st_atime)
+                                    except Exception:
+                                        atime = None
+                                        
+                                    rel = os.path.relpath(file_path, path)
+                                    
+                                    timeline += (
+                                        f"{rel} | "
+                                        f"Modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')} | "
+                                        f"Created: {ctime.strftime('%Y-%m-%d %H:%M:%S')}"
+                                    )
+                                     
+                                    if atime:
+                                        timeline += f" | Accessed: {atime.strftime('%Y-%m-%d %H:%M:%S')}"
 
-            self.investigation_data['timeline'] = timeline
+                                    timeline += "\n"
+                                    
+                            except (PermissionError, FileNotFoundError, OSError):
+                                continue
+   
+            self.timeline_text.delete("1.0", "end")
+            self.timeline_text.insert("1.0", timeline)
+            self.timeline_text.see("1.0")
+
+            self.investigation_data["timeline"] = timeline
 
         except Exception as e:
-            self.timeline_text.insert('end', f"Error collecting timeline: {str(e)}\n")
+            self.timeline_text.insert("1.0", f"Error collecting timeline: {e}")
 
-        self.status_label.config(text="Timeline collected")
+        self.status_label.config(text="Timeline collected (complete)")
         self.progress_bar.stop()
-
+        
+        
     def collect_browser_history(self):
         """Collect browser history from selected browsers"""
         self.status_label.config(text="Collecting browser history...")
@@ -463,16 +509,20 @@ class DigitalForensicTool:
 
                 conn = sqlite3.connect(temp_path)
                 cursor = conn.cursor()
-                cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 20")
+                cursor.execute("SELECT urls.url, urls.title, visits.visit_time, visits.from_visit, visits.transition FROM visits JOIN urls ON visits.url = urls.id ORDER BY visits.visit_time DESC")
                 rows = cursor.fetchall()
                 conn.close()
                 os.remove(temp_path)
 
                 for row in rows:
-                    url, title, timestamp = row
+                    url, title, visit_time, from_visit, transition = row
                     if title:
-                        history_data += f"URL: {url}\nTitle: {title}\n"
-                        history_data += "-" * 30 + "\n"
+                        history_data += f"URL: {url}\n"
+                        history_data += f"Title: {title}\n"
+                        history_data += f"Visit Time: {self.chrome_timestamp_to_datetime(visit_time)}\n"
+                        history_data += f"From Visit ID: {from_visit}\n"
+                        history_data += f"Transition: {transition}\n"
+                        history_data += "-" * 60 + "\n"
             else:
                 history_data = "Chrome history not found.\n"
         except Exception as e:
@@ -495,7 +545,13 @@ class DigitalForensicTool:
 
             if os.path.exists(firefox_path):
                 # Find the first profile
-                profiles = [d for d in os.listdir(firefox_path) if d.endswith('.default') or d.endswith('.default-release')]
+                profiles = []
+
+                for d in os.listdir(firefox_path):
+                    db = os.path.join(firefox_path, d, "places.sqlite")
+                    if os.path.exists(db):
+                        profiles.append(d)
+                # profiles = [d for d in os.listdir(firefox_path) if d.endswith('.default') or d.endswith('.default-release')]
                 if profiles:
                     profile_path = os.path.join(firefox_path, profiles[0], 'places.sqlite')
                     if os.path.exists(profile_path):
@@ -507,7 +563,7 @@ class DigitalForensicTool:
                         cursor.execute("""
                             SELECT url, title, last_visit_date
                             FROM moz_places
-                            ORDER BY last_visit_date DESC LIMIT 20
+                            ORDER BY last_visit_date DESC
                         """)
                         rows = cursor.fetchall()
                         conn.close()
@@ -515,9 +571,20 @@ class DigitalForensicTool:
 
                         for row in rows:
                             url, title, timestamp = row
-                            if title:
-                                history_data += f"URL: {url}\nTitle: {title}\n"
-                                history_data += "-" * 30 + "\n"
+                            visit_time = "Unknown"
+
+                            if timestamp:
+                                try:
+                                    visit_time = datetime.fromtimestamp(
+                                        timestamp / 1000000
+                                    ).strftime("%Y-%m-%d %H:%M:%S")
+                                except Exception:
+                                    pass
+
+                            history_data += f"URL: {url}\n"
+                            history_data += f"Title: {title}\n"
+                            history_data += f"Last Visit: {visit_time}\n"
+                            history_data += "-" * 60 + "\n"
                     else:
                         history_data = "Firefox places.sqlite not found.\n"
                 else:
@@ -548,16 +615,20 @@ class DigitalForensicTool:
 
                 conn = sqlite3.connect(temp_path)
                 cursor = conn.cursor()
-                cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 20")
+                cursor.execute("SELECT urls.url, urls.title, visits.visit_time, visits.from_visit, visits.transition FROM visits JOIN urls ON visits.url = urls.id ORDER BY visits.visit_time DESC")
                 rows = cursor.fetchall()
                 conn.close()
                 os.remove(temp_path)
 
                 for row in rows:
-                    url, title, timestamp = row
+                    url, title, visit_time, from_visit, transition = row
                     if title:
-                        history_data += f"URL: {url}\nTitle: {title}\n"
-                        history_data += "-" * 30 + "\n"
+                        history_data += f"URL: {url}\n"
+                        history_data += f"Title: {title}\n"
+                        history_data += f"Visit Time: {self.chrome_timestamp_to_datetime(visit_time)}\n"
+                        history_data += f"From Visit ID: {from_visit}\n"
+                        history_data += f"Transition: {transition}\n"
+                        history_data += "-" * 60 + "\n"
             else:
                 history_data = "Edge history not found.\n"
         except Exception as e:
@@ -584,16 +655,20 @@ class DigitalForensicTool:
 
                 conn = sqlite3.connect(temp_path)
                 cursor = conn.cursor()
-                cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 20")
+                cursor.execute("SELECT urls.url, urls.title, visits.visit_time, visits.from_visit, visits.transition FROM visits JOIN urls ON visits.url = urls.id ORDER BY visits.visit_time DESC")
                 rows = cursor.fetchall()
                 conn.close()
                 os.remove(temp_path)
 
                 for row in rows:
-                    url, title, timestamp = row
+                    url, title, visit_time, from_visit, transition = row
                     if title:
-                        history_data += f"URL: {url}\nTitle: {title}\n"
-                        history_data += "-" * 30 + "\n"
+                        history_data += f"URL: {url}\n"
+                        history_data += f"Title: {title}\n"
+                        history_data += f"Visit Time: {self.chrome_timestamp_to_datetime(visit_time)}\n"
+                        history_data += f"From Visit ID: {from_visit}\n"
+                        history_data += f"Transition: {transition}\n"
+                        history_data += "-" * 60 + "\n"
             else:
                 history_data = "Brave history not found.\n"
         except Exception as e:
@@ -614,9 +689,7 @@ class DigitalForensicTool:
                     conn = sqlite3.connect(temp_path)
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT url, title, visit_time
-                        FROM history_items
-                        ORDER BY visit_time DESC LIMIT 20
+                        SELECT history_items.url, history_items.title, history_visits.visit_time FROM history_visits JOIN history_items ON history_visits.history_item = history_items.id ORDER BY history_visits.visit_time DESC;
                     """)
                     rows = cursor.fetchall()
                     conn.close()
@@ -624,9 +697,19 @@ class DigitalForensicTool:
 
                     for row in rows:
                         url, title, timestamp = row
-                        if title:
-                            history_data += f"URL: {url}\nTitle: {title}\n"
-                            history_data += "-" * 30 + "\n"
+                        visit_time = "Unknown"
+
+                        if timestamp:
+                            try:
+                                visit_time = datetime(2001,1,1) + timedelta(seconds=timestamp)
+                                visit_time = visit_time.strftime("%Y-%m-%d %H:%M:%S")
+                            except:
+                                pass
+
+                        history_data += f"URL: {url}\n"
+                        history_data += f"Title: {title}\n"
+                        history_data += f"Last Visit: {visit_time}\n"
+                        history_data += "-" * 60 + "\n"
                 else:
                     history_data = "Safari history not found.\n"
             else:
@@ -637,72 +720,53 @@ class DigitalForensicTool:
         return history_data
 
     def collect_event_logs(self):
-        """Collect system event logs"""
-        self.status_label.config(text="Collecting event logs...")
+        """Collect complete system event logs (no time/count limits)"""
+        self.status_label.config(text="Collecting complete event logs (this may take a while)...")
         self.progress_bar.start()
-
         self.log_text.delete('1.0', 'end')
 
         try:
             logs = "=" * 60 + "\n"
-            logs += f"SYSTEM EVENT LOGS\n"
+            logs += f"SYSTEM EVENT LOGS (COMPLETE)\n"
             logs += f"Collected: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             logs += "=" * 60 + "\n\n"
 
             if self.current_os == "Windows":
-                # Windows Event Logs
-                logs += "Windows Event Logs:\n"
-                logs += "-" * 40 + "\n"
-
-                # System log
+                logs += "Windows Event Logs:\n" + "-" * 40 + "\n"
                 try:
-                    result = subprocess.run(['wevtutil', 'qe', 'System', '/c:10', '/f:text'],
-                                          capture_output=True, text=True, timeout=10)
-                    logs += "System Log (Last 10 events):\n"
-                    logs += result.stdout[:1000] + "...\n\n"
-                except:
-                    logs += "Unable to read System log. Run as administrator.\n\n"
-
-                # Application log
+                    result = subprocess.run(['wevtutil', 'qe', 'System', '/f:text'],
+                                             capture_output=True, text=True, timeout=300)
+                    logs += "System Log (Complete):\n" + result.stdout + "\n\n"
+                except Exception as e:
+                    logs += f"Unable to read System log: {e}. Run as administrator.\n\n"
                 try:
-                    result = subprocess.run(['wevtutil', 'qe', 'Application', '/c:10', '/f:text'],
-                                          capture_output=True, text=True, timeout=10)
-                    logs += "Application Log (Last 10 events):\n"
-                    logs += result.stdout[:1000] + "...\n\n"
-                except:
-                    logs += "Unable to read Application log. Run as administrator.\n\n"
+                    result = subprocess.run(['wevtutil', 'qe', 'Application', '/f:text'],
+                                             capture_output=True, text=True, timeout=300)
+                    logs += "Application Log (Complete):\n" + result.stdout + "\n\n"
+                except Exception as e:
+                    logs += f"Unable to read Application log: {e}. Run as administrator.\n\n"
 
             elif self.current_os == "Linux":
-                # Linux system logs
-                logs += "Linux System Logs:\n"
-                logs += "-" * 40 + "\n"
-
-                # Check for syslog
+                logs += "Linux System Logs:\n" + "-" * 40 + "\n"
                 if os.path.exists('/var/log/syslog'):
-                    with open('/var/log/syslog', 'r') as f:
-                        lines = f.readlines()[-20:]  # Last 20 lines
-                        logs += "Syslog (Last 20 lines):\n"
-                        logs += ''.join(lines) + "\n"
-
-                # Check for auth log
+                    with open('/var/log/syslog', 'r', errors='ignore') as f:
+                        logs += "Syslog (Complete):\n" + f.read() + "\n"
                 if os.path.exists('/var/log/auth.log'):
-                    with open('/var/log/auth.log', 'r') as f:
-                        lines = f.readlines()[-10:]  # Last 10 lines
-                        logs += "\nAuthentication Log (Last 10 lines):\n"
-                        logs += ''.join(lines) + "\n"
+                    with open('/var/log/auth.log', 'r', errors='ignore') as f:
+                        logs += "\nAuthentication Log (Complete):\n" + f.read() + "\n"
 
-            elif self.current_os == "Darwin":  # macOS
-                logs += "macOS System Logs:\n"
-                logs += "-" * 40 + "\n"
-
-                # System log using log command
+            elif self.current_os == "Darwin":
+                logs += "macOS System Logs:\n" + "-" * 40 + "\n"
                 try:
-                    result = subprocess.run(['log', 'show', '--last', '10m', '--predicate', 'processImagePath contains "system"'],
-                                          capture_output=True, text=True, timeout=10)
-                    logs += "System Log (Last 10 minutes):\n"
-                    logs += result.stdout[:1000] + "...\n\n"
-                except:
-                    logs += "Unable to read system log.\n\n"
+                    # macOS unified log retains a limited window regardless of --start,
+                    # so this pulls everything still on disk.
+                    result = subprocess.run(
+                        ['log', 'show', '--start', '2000-01-01 00:00:00',
+                         '--predicate', 'processImagePath contains "system"'],
+                        capture_output=True, text=True, timeout=180)
+                    logs += "System Log (Complete available history):\n" + result.stdout + "\n\n"
+                except Exception as e:
+                    logs += f"Unable to read system log: {e}\n\n"
 
             self.log_text.insert('1.0', logs)
             self.investigation_data['event_logs'] = logs
@@ -710,51 +774,48 @@ class DigitalForensicTool:
         except Exception as e:
             self.log_text.insert('1.0', f"Error collecting event logs: {str(e)}\n")
 
-        self.status_label.config(text="Event logs collected")
+        self.status_label.config(text="Event logs collected (complete)")
         self.progress_bar.stop()
 
     def collect_network_activity(self):
-        """Collect network activity information"""
-        self.status_label.config(text="Collecting network activity...")
+        """Collect complete network activity information"""
+        self.status_label.config(text="Collecting complete network activity...")
         self.progress_bar.start()
 
         try:
             network = "\n" + "=" * 60 + "\n"
-            network += f"NETWORK ACTIVITY\n"
+            network += f"NETWORK ACTIVITY (COMPLETE)\n"
             network += f"Collected: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             network += "=" * 60 + "\n\n"
-
-            # Network connections
-            network += "Network Connections:\n"
-            network += "-" * 40 + "\n"
+            network += "Network Connections:\n" + "-" * 40 + "\n"
 
             if self.current_os == "Windows":
                 result = subprocess.run(['netstat', '-an'], capture_output=True, text=True)
-            else:
+            elif self.current_os == "Linux":
                 result = subprocess.run(['netstat', '-tuln'], capture_output=True, text=True)
+            elif self.current_os == "Darwin":
+                result = subprocess.run(['netstat', '-anv'], capture_output=True, text=True)
 
-            network += result.stdout[:1000] + "...\n\n"
-
-            # Active connections with IP info
-            network += "\nActive Connections (Detailed):\n"
-            network += "-" * 40 + "\n"
-
-            if self.current_os == "Windows":
-                result = subprocess.run(['netstat', '-b'], capture_output=True, text=True, timeout=5)
-            else:
-                result = subprocess.run(['netstat', '-tunp'], capture_output=True, text=True, timeout=5)
-
-            network += result.stdout[:500] + "...\n"
+            network += "\nActive Connections (Detailed):\n" + "-" * 40 + "\n"
+            try:
+                if self.current_os == "Windows":
+                    result = subprocess.run(['netstat', '-b'], capture_output=True, text=True, timeout=30)
+                elif self.current_os == "Linux":
+                    result = subprocess.run(['netstat', '-tunp'], capture_output=True, text=True, timeout=30)
+                elif self.current_os == "Darwin":
+                    result = subprocess.run(['lsof', '-i'], capture_output=True, text=True)
+                network += result.stdout + "\n"
+            except Exception as e:
+                network += f"Unable to get detailed connection info: {e}\n"
 
             self.log_text.insert('end', network)
             self.log_text.see('end')
-
             self.investigation_data['network_activity'] = network
 
         except Exception as e:
             self.log_text.insert('end', f"Error collecting network activity: {str(e)}\n")
 
-        self.status_label.config(text="Network activity collected")
+        self.status_label.config(text="Network activity collected (complete)")
         self.progress_bar.stop()
 
     def browse_file(self):
